@@ -3,67 +3,70 @@
 namespace App\Services;
 
 use App\Models\Shipment;
-use App\Models\ShipmentEvent;
 use Illuminate\Support\Facades\DB;
 
 class TrackingService
 {
-    public function trackByAwb(string $awb): ?Shipment
+    public function trackByAwb(string $awbNumber): ?Shipment
     {
-        return Shipment::with(['events' => function ($query) {
-            $query->orderBy('created_at', 'desc');
-        }])->where('awb', $awb)->first();
+        return Shipment::with(['status', 'currentHub', 'originHub', 'destinationHub', 'merchant', 'deliveryPartner', 'customer'])
+            ->where('awb_number', $awbNumber)
+            ->first();
     }
 
-    public function trackByOrderId(string $orderId): \Illuminate\Database\Eloquent\Collection
+    public function getTrackingEvents(Shipment $shipment): array
     {
-        return Shipment::with(['events' => function ($query) {
-            $query->orderBy('created_at', 'desc');
-        }])->where('order_id', $orderId)->get();
-    }
-
-    public function getTrackingTimeline(Shipment $shipment): array
-    {
-        $events = ShipmentEvent::where('shipment_id', $shipment->id)
-            ->orderBy('created_at', 'asc')
+        return DB::table('shipment_events')
+            ->where('shipment_id', $shipment->id)
+            ->orderBy('event_time', 'desc')
             ->get()
-            ->map(function ($event) {
-                return [
-                    'status'      => $event->status,
-                    'description' => $event->description,
-                    'location'    => $event->location,
-                    'hub_id'      => $event->hub_id,
-                    'actor_type'  => $event->actor_type,
-                    'actor_id'    => $event->actor_id,
-                    'timestamp'   => $event->created_at->toIso8601String(),
-                ];
-            })
+            ->map(fn ($event) => [
+                'id'          => $event->id,
+                'status'      => $event->status,
+                'status_label' => $this->getStatusLabel($event->status),
+                'description' => $event->description,
+                'hub'         => $event->hub_name,
+                'location'    => $event->location,
+                'timestamp'   => $event->event_time,
+                'created_at'  => $event->created_at,
+            ])
             ->toArray();
+    }
+
+    public function getStatusLabel(string $status): string
+    {
+        $labels = [
+            'order_placed'     => 'Order Placed',
+            'picked_up'        => 'Picked Up',
+            'in_transit'       => 'In Transit',
+            'arrived_hub'      => 'Arrived at Hub',
+            'out_for_delivery' => 'Out for Delivery',
+            'delivered'        => 'Delivered',
+            'ndr'              => 'Delivery Attempted',
+            'rto_initiated'    => 'RTO Initiated',
+            'rto_delivered'    => 'Returned to Sender',
+            'cancelled'        => 'Cancelled',
+            'hold'             => 'On Hold',
+        ];
+
+        return $labels[$status] ?? ucfirst(str_replace('_', ' ', $status));
+    }
+
+    public function getPublicTrackingData(string $awbNumber): ?array
+    {
+        $shipment = $this->trackByAwb($awbNumber);
+
+        if (! $shipment) {
+            return null;
+        }
 
         return [
-            'awb'     => $shipment->awb,
-            'status'  => $shipment->current_status,
-            'events'  => $events,
+            'awb_number'      => $shipment->awb_number,
+            'status'          => $shipment->status->slug ?? 'unknown',
+            'status_label'    => $this->getStatusLabel($shipment->status->slug ?? ''),
+            'current_city'    => $shipment->current_hub_city ?? null,
+            'estimated_delivery' => $shipment->estimated_delivery,
+            'events'          => $this->getTrackingEvents($shipment),
         ];
-    }
-
-    public function addTrackingEvent(
-        Shipment $shipment,
-        string $status,
-        string $description,
-        ?string $location = null,
-        ?int $hubId = null,
-        ?string $actorType = null,
-        ?int $actorId = null
-    ): ShipmentEvent {
-        return ShipmentEvent::create([
-            'shipment_id' => $shipment->id,
-            'status'      => $status,
-            'description' => $description,
-            'location'    => $location,
-            'hub_id'      => $hubId,
-            'actor_type'  => $actorType,
-            'actor_id'    => $actorId,
-        ]);
     }
 }
